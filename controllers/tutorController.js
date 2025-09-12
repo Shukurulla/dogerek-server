@@ -76,13 +76,6 @@ export const processApplication = async (req, res) => {
         .json(formatResponse(false, null, "Ariza topilmadi"));
     }
 
-    // Check if tutor owns the club
-    if (enrollment.club.tutor.toString() !== req.user.id) {
-      return res
-        .status(403)
-        .json(formatResponse(false, null, "Ruxsat berilmagan"));
-    }
-
     if (enrollment.status !== "pending") {
       return res
         .status(400)

@@ -4,6 +4,84 @@ import Student from "../models/Student.js";
 import { generateToken } from "../middleware/auth.js";
 import { formatResponse } from "../utils/formatters.js";
 
+// Create initial university admin (faqat birinchi admin uchun yoki mavjud admin tomonidan)
+export const createUniversityAdmin = async (req, res) => {
+  try {
+    const { username, password, fullName, phone, email } = req.body;
+
+    // Validation
+    if (!username || !password || !fullName) {
+      return res
+        .status(400)
+        .json(
+          formatResponse(
+            false,
+            null,
+            "Username, parol va F.I.O kiritilishi shart"
+          )
+        );
+    }
+
+    // Check if any admin exists (agar admin yo'q bo'lsa, birinchi admin yaratiladi)
+    const adminCount = await User.countDocuments({ role: "university_admin" });
+
+    // Agar admin mavjud bo'lsa, faqat university_admin yarata oladi
+    if (adminCount > 0 && (!req.user || req.user.role !== "university_admin")) {
+      return res
+        .status(403)
+        .json(
+          formatResponse(
+            false,
+            null,
+            "Faqat mavjud admin yangi admin yarata oladi"
+          )
+        );
+    }
+
+    // Check if username exists
+    const existingUser = await User.findOne({ username });
+    if (existingUser) {
+      return res
+        .status(400)
+        .json(formatResponse(false, null, "Bu username allaqachon mavjud"));
+    }
+
+    // Create new university admin
+    const newAdmin = new User({
+      username,
+      password,
+      role: "university_admin",
+      profile: {
+        fullName,
+        phone: phone ? `+998${phone.replace(/\D/g, "")}` : null,
+        email,
+      },
+      createdBy: req.user?.id || null,
+    });
+
+    await newAdmin.save();
+
+    // Parolni response'dan olib tashlash
+    const adminData = newAdmin.toObject();
+    delete adminData.password;
+
+    res
+      .status(201)
+      .json(
+        formatResponse(
+          true,
+          adminData,
+          "Universitet admin muvaffaqiyatli yaratildi"
+        )
+      );
+  } catch (error) {
+    console.error("Create university admin error:", error);
+    res
+      .status(500)
+      .json(formatResponse(false, null, "Server xatosi", error.message));
+  }
+};
+
 // Admin login (university_admin, faculty_admin, tutor)
 export const loginAdmin = async (req, res) => {
   try {

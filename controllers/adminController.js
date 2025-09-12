@@ -6,6 +6,7 @@ import { formatResponse, formatPhoneNumber } from "../utils/formatters.js";
 import {
   syncHemisData,
   getFacultiesFromStudents,
+  getGroupsFromStudents,
 } from "../utils/syncHemisData.js";
 
 // Create faculty admin
@@ -67,12 +68,16 @@ export const createFacultyAdmin = async (req, res) => {
 
     await newAdmin.save();
 
+    // Remove password from response
+    const adminData = newAdmin.toObject();
+    delete adminData.password;
+
     res
       .status(201)
       .json(
         formatResponse(
           true,
-          newAdmin,
+          adminData,
           "Fakultet admin muvaffaqiyatli yaratildi"
         )
       );
@@ -87,7 +92,7 @@ export const createFacultyAdmin = async (req, res) => {
 // Get all faculty admins
 export const getAllFacultyAdmins = async (req, res) => {
   try {
-    const admins = await User.find({ role: "faculty_admin", isActive: true })
+    const admins = await User.find({ role: "faculty_admin" })
       .select("-password")
       .sort("-createdAt");
 
@@ -104,7 +109,8 @@ export const getAllFacultyAdmins = async (req, res) => {
 export const updateFacultyAdmin = async (req, res) => {
   try {
     const { id } = req.params;
-    const { fullName, phone, email, isActive } = req.body;
+    const { username, fullName, phone, email, password, facultyId, isActive } =
+      req.body;
 
     const admin = await User.findById(id);
 
@@ -114,17 +120,66 @@ export const updateFacultyAdmin = async (req, res) => {
         .json(formatResponse(false, null, "Fakultet admin topilmadi"));
     }
 
+    // Update username if provided and different
+    if (username && username !== admin.username) {
+      const existingUser = await User.findOne({ username, _id: { $ne: id } });
+      if (existingUser) {
+        return res
+          .status(400)
+          .json(formatResponse(false, null, "Bu username allaqachon mavjud"));
+      }
+      admin.username = username;
+    }
+
     // Update fields
     if (fullName) admin.profile.fullName = fullName;
-    if (email) admin.profile.email = email;
-    if (phone) admin.profile.phone = formatPhoneNumber(phone).db;
+    if (email !== undefined) admin.profile.email = email || null;
+    if (phone !== undefined)
+      admin.profile.phone = phone ? formatPhoneNumber(phone).db : null;
     if (typeof isActive === "boolean") admin.isActive = isActive;
+
+    // Update password if provided
+    if (password && password.length >= 6) {
+      admin.password = password; // Schema pre-save hook will hash it
+    } else if (password && password.length < 6) {
+      return res
+        .status(400)
+        .json(
+          formatResponse(
+            false,
+            null,
+            "Parol kamida 6 ta belgidan iborat bo'lishi kerak"
+          )
+        );
+    }
+
+    // Update faculty if provided
+    if (facultyId && facultyId !== admin.faculty?.id) {
+      const faculties = await getFacultiesFromStudents();
+      const faculty = faculties.find((f) => f.id === parseInt(facultyId));
+
+      if (!faculty) {
+        return res
+          .status(400)
+          .json(formatResponse(false, null, "Fakultet topilmadi"));
+      }
+
+      admin.faculty = {
+        id: faculty.id,
+        name: faculty.name,
+        code: faculty.code,
+      };
+    }
 
     admin.updatedAt = new Date();
     await admin.save();
 
+    // Remove password from response
+    const adminData = admin.toObject();
+    delete adminData.password;
+
     res.json(
-      formatResponse(true, admin, "Fakultet admin ma'lumotlari yangilandi")
+      formatResponse(true, adminData, "Fakultet admin ma'lumotlari yangilandi")
     );
   } catch (error) {
     console.error("Update faculty admin error:", error);
@@ -147,6 +202,12 @@ export const deleteFacultyAdmin = async (req, res) => {
         .json(formatResponse(false, null, "Fakultet admin topilmadi"));
     }
 
+    // Check if admin has any active clubs under their faculty
+    const activeClubs = await Club.countDocuments({
+      "faculty.id": admin.faculty.id,
+      isActive: true,
+    });
+
     // Soft delete
     admin.isActive = false;
     admin.updatedAt = new Date();
@@ -155,6 +216,35 @@ export const deleteFacultyAdmin = async (req, res) => {
     res.json(formatResponse(true, null, "Fakultet admin o'chirildi"));
   } catch (error) {
     console.error("Delete faculty admin error:", error);
+    res
+      .status(500)
+      .json(formatResponse(false, null, "Server xatosi", error.message));
+  }
+};
+
+// Get faculties list from students collection
+export const getFacultiesList = async (req, res) => {
+  try {
+    const faculties = await getFacultiesFromStudents();
+    res.json(formatResponse(true, faculties, "Fakultetlar ro'yxati"));
+  } catch (error) {
+    console.error("Get faculties error:", error);
+    res
+      .status(500)
+      .json(formatResponse(false, null, "Server xatosi", error.message));
+  }
+};
+
+// Get groups list
+export const getGroupsList = async (req, res) => {
+  try {
+    const { facultyId } = req.query;
+    const groups = await getGroupsFromStudents(
+      facultyId ? parseInt(facultyId) : null
+    );
+    res.json(formatResponse(true, groups, "Guruhlar ro'yxati"));
+  } catch (error) {
+    console.error("Get groups error:", error);
     res
       .status(500)
       .json(formatResponse(false, null, "Server xatosi", error.message));
@@ -173,6 +263,7 @@ export const getDashboardStats = async (req, res) => {
       todayAttendance,
       enrolledStudents,
       externalCourseStudents,
+      faculties,
     ] = await Promise.all([
       Student.countDocuments({ isActive: true }),
       Club.countDocuments({ isActive: true }),
@@ -185,13 +276,17 @@ export const getDashboardStats = async (req, res) => {
           $lt: new Date(new Date().setHours(23, 59, 59, 999)),
         },
       }),
-      Student.countDocuments({ "enrolledClubs.0": { $exists: true } }),
+      Student.countDocuments({
+        "enrolledClubs.0": { $exists: true },
+        "enrolledClubs.status": "approved",
+      }),
       Student.countDocuments({ "externalCourses.0": { $exists: true } }),
+      getFacultiesFromStudents(),
     ]);
 
     // Band bo'lmagan studentlar
-    const notBusyStudents =
-      totalStudents - enrolledStudents - externalCourseStudents;
+    const busyStudents = enrolledStudents + externalCourseStudents;
+    const notBusyStudents = totalStudents - busyStudents;
 
     const stats = {
       totalStudents,
@@ -203,13 +298,12 @@ export const getDashboardStats = async (req, res) => {
       enrolledStudents,
       externalCourseStudents,
       notBusyStudents,
+      busyStudents,
       busyPercentage:
         totalStudents > 0
-          ? (
-              ((enrolledStudents + externalCourseStudents) / totalStudents) *
-              100
-            ).toFixed(1)
+          ? ((busyStudents / totalStudents) * 100).toFixed(1)
           : 0,
+      facultiesCount: faculties.length,
     };
 
     res.json(formatResponse(true, stats, "Dashboard statistikasi"));
@@ -224,11 +318,17 @@ export const getDashboardStats = async (req, res) => {
 // Get all clubs
 export const getAllClubs = async (req, res) => {
   try {
-    const { facultyId, tutorId, page = 1, limit = 20 } = req.query;
+    const { facultyId, tutorId, search, page = 1, limit = 20 } = req.query;
 
     const filter = { isActive: true };
     if (facultyId) filter["faculty.id"] = parseInt(facultyId);
     if (tutorId) filter.tutor = tutorId;
+    if (search) {
+      filter.$or = [
+        { name: { $regex: search, $options: "i" } },
+        { description: { $regex: search, $options: "i" } },
+      ];
+    }
 
     const skip = (page - 1) * limit;
 
@@ -241,11 +341,29 @@ export const getAllClubs = async (req, res) => {
       Club.countDocuments(filter),
     ]);
 
+    // Add statistics for each club
+    const clubsWithStats = await Promise.all(
+      clubs.map(async (club) => {
+        const approvedStudents = await Student.countDocuments({
+          "enrolledClubs.club": club._id,
+          "enrolledClubs.status": "approved",
+        });
+
+        return {
+          ...club.toObject(),
+          currentStudents: approvedStudents,
+          availableSlots: club.capacity
+            ? club.capacity - approvedStudents
+            : null,
+        };
+      })
+    );
+
     res.json(
       formatResponse(
         true,
         {
-          clubs,
+          clubs: clubsWithStats,
           pagination: {
             total,
             page: parseInt(page),
@@ -267,20 +385,41 @@ export const getAllClubs = async (req, res) => {
 // Get all students
 export const getAllStudents = async (req, res) => {
   try {
-    const { facultyId, groupId, busy, page = 1, limit = 20 } = req.query;
+    const {
+      facultyId,
+      groupId,
+      busy,
+      search,
+      page = 1,
+      limit = 20,
+    } = req.query;
 
     const filter = { isActive: true };
     if (facultyId) filter["department.id"] = parseInt(facultyId);
     if (groupId) filter["group.id"] = parseInt(groupId);
+    if (search) {
+      filter.$or = [
+        { full_name: { $regex: search, $options: "i" } },
+        { student_id_number: { $regex: search, $options: "i" } },
+      ];
+    }
 
     if (busy === "true") {
       filter.$or = [
-        { "enrolledClubs.0": { $exists: true } },
+        {
+          "enrolledClubs.0": { $exists: true },
+          "enrolledClubs.status": "approved",
+        },
         { "externalCourses.0": { $exists: true } },
       ];
     } else if (busy === "false") {
       filter.$and = [
-        { "enrolledClubs.0": { $exists: false } },
+        {
+          $or: [
+            { "enrolledClubs.0": { $exists: false } },
+            { "enrolledClubs.status": { $ne: "approved" } },
+          ],
+        },
         { "externalCourses.0": { $exists: false } },
       ];
     }
@@ -290,6 +429,7 @@ export const getAllStudents = async (req, res) => {
     const [students, total] = await Promise.all([
       Student.find(filter)
         .populate("enrolledClubs.club", "name")
+        .populate("externalCourses", "courseName institutionName")
         .skip(skip)
         .limit(parseInt(limit))
         .sort("full_name"),
@@ -322,16 +462,18 @@ export const getAllStudents = async (req, res) => {
 // Get all attendance
 export const getAllAttendance = async (req, res) => {
   try {
-    const { clubId, date, page = 1, limit = 20 } = req.query;
+    const { clubId, startDate, endDate, page = 1, limit = 20 } = req.query;
 
     const filter = {};
     if (clubId) filter.club = clubId;
-    if (date) {
-      const startDate = new Date(date);
-      startDate.setHours(0, 0, 0, 0);
-      const endDate = new Date(date);
-      endDate.setHours(23, 59, 59, 999);
-      filter.date = { $gte: startDate, $lte: endDate };
+    if (startDate || endDate) {
+      filter.date = {};
+      if (startDate) filter.date.$gte = new Date(startDate);
+      if (endDate) {
+        const end = new Date(endDate);
+        end.setHours(23, 59, 59, 999);
+        filter.date.$lte = end;
+      }
     }
 
     const skip = (page - 1) * limit;

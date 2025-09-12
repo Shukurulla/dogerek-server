@@ -9,6 +9,8 @@ import {
   getAllStudents,
   getAllAttendance,
   syncHemisDataController,
+  getFacultiesList,
+  getGroupsList,
 } from "../controllers/adminController.js";
 import { authenticate } from "../middleware/auth.js";
 import { isUniversityAdmin } from "../middleware/roleCheck.js";
@@ -20,6 +22,10 @@ router.use(authenticate, isUniversityAdmin);
 
 // Dashboard
 router.get("/dashboard", getDashboardStats);
+
+// Faculties and groups
+router.get("/faculties", getFacultiesList);
+router.get("/groups", getGroupsList);
 
 // Faculty admin management
 router.post("/faculty-admin", createFacultyAdmin);
