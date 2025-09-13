@@ -8,6 +8,7 @@ import {
   updateAttendance,
   addTelegramPost,
   getTutorDashboard,
+  getAttendanceByDate,
 } from "../controllers/tutorController.js";
 import { authenticate } from "../middleware/auth.js";
 import { isTutor } from "../middleware/roleCheck.js";
@@ -31,6 +32,9 @@ router.post("/application/:id/process", processApplication);
 router.post("/attendance", markAttendance);
 router.get("/attendance/:clubId", getAttendanceHistory);
 router.put("/attendance/:id", updateAttendance);
+
+// Get attendance by specific date
+router.get("/attendance/by-date", getAttendanceByDate);
 
 // Telegram posts
 router.post("/attendance/:id/telegram-post", addTelegramPost);

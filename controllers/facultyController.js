@@ -2,7 +2,9 @@ import User from "../models/User.js";
 import Student from "../models/Student.js";
 import Club from "../models/Club.js";
 import Attendance from "../models/Attendance.js";
+import Enrollment from "../models/Enrollment.js";
 import { formatResponse, formatPhoneNumber } from "../utils/formatters.js";
+import { getFacultiesFromStudents } from "../utils/syncHemisData.js";
 
 // Create club
 export const createClub = async (req, res) => {
@@ -30,7 +32,7 @@ export const createClub = async (req, res) => {
         );
     }
 
-    // Check tutor
+    // Check tutor - faqat shu fakultetdagi tutorlar
     const tutor = await User.findOne({
       _id: tutorId,
       role: "tutor",
@@ -99,11 +101,29 @@ export const getMyClubs = async (req, res) => {
       Club.countDocuments(filter),
     ]);
 
+    // Har bir klub uchun real statistika
+    const clubsWithStats = await Promise.all(
+      clubs.map(async (club) => {
+        // Real enrolled students count from Student collection
+        const enrolledCount = await Student.countDocuments({
+          "enrolledClubs.club": club._id,
+          "enrolledClubs.status": "approved",
+          isActive: true,
+        });
+
+        return {
+          ...club.toObject(),
+          currentStudents: enrolledCount,
+          availableSlots: club.capacity ? club.capacity - enrolledCount : null,
+        };
+      })
+    );
+
     res.json(
       formatResponse(
         true,
         {
-          clubs,
+          clubs: clubsWithStats,
           pagination: {
             total,
             page: parseInt(page),
@@ -171,10 +191,12 @@ export const updateClub = async (req, res) => {
 
       // Remove from old tutor
       const oldTutor = await User.findById(club.tutor);
-      oldTutor.assignedClubs = oldTutor.assignedClubs.filter(
-        (c) => c.toString() !== id
-      );
-      await oldTutor.save();
+      if (oldTutor) {
+        oldTutor.assignedClubs = oldTutor.assignedClubs.filter(
+          (c) => c.toString() !== id
+        );
+        await oldTutor.save();
+      }
 
       // Add to new tutor
       newTutor.assignedClubs.push(club._id);
@@ -270,9 +292,13 @@ export const createTutor = async (req, res) => {
 
     await newTutor.save();
 
+    // Remove password from response
+    const tutorData = newTutor.toObject();
+    delete tutorData.password;
+
     res
       .status(201)
-      .json(formatResponse(true, newTutor, "Tutor muvaffaqiyatli yaratildi"));
+      .json(formatResponse(true, tutorData, "Tutor muvaffaqiyatli yaratildi"));
   } catch (error) {
     console.error("Create tutor error:", error);
     res
@@ -322,14 +348,19 @@ export const updateTutor = async (req, res) => {
 
     // Update fields
     if (fullName) tutor.profile.fullName = fullName;
-    if (email) tutor.profile.email = email;
-    if (phone) tutor.profile.phone = formatPhoneNumber(phone).db;
+    if (email !== undefined) tutor.profile.email = email || null;
+    if (phone !== undefined)
+      tutor.profile.phone = phone ? formatPhoneNumber(phone).db : null;
     if (typeof isActive === "boolean") tutor.isActive = isActive;
 
     tutor.updatedAt = new Date();
     await tutor.save();
 
-    res.json(formatResponse(true, tutor, "Tutor ma'lumotlari yangilandi"));
+    // Remove password from response
+    const tutorData = tutor.toObject();
+    delete tutorData.password;
+
+    res.json(formatResponse(true, tutorData, "Tutor ma'lumotlari yangilandi"));
   } catch (error) {
     console.error("Update tutor error:", error);
     res
@@ -387,7 +418,7 @@ export const deleteTutor = async (req, res) => {
   }
 };
 
-// Faculty dashboard
+// Faculty dashboard - real ma'lumotlar
 export const getFacultyDashboard = async (req, res) => {
   try {
     const facultyId = req.user.user.faculty.id;
@@ -398,18 +429,33 @@ export const getFacultyDashboard = async (req, res) => {
       totalTutors,
       enrolledStudents,
       todayAttendance,
+      pendingEnrollments,
     ] = await Promise.all([
-      Student.countDocuments({ "department.id": facultyId }),
-      Club.countDocuments({ "faculty.id": facultyId, isActive: true }),
+      // Fakultetdagi barcha studentlar
+      Student.countDocuments({
+        "department.id": facultyId,
+        isActive: true,
+      }),
+      // Fakultetdagi to'garaklar
+      Club.countDocuments({
+        "faculty.id": facultyId,
+        isActive: true,
+      }),
+      // Fakultetdagi tutorlar
       User.countDocuments({
         role: "tutor",
         "faculty.id": facultyId,
         isActive: true,
       }),
+      // Fakultet to'garaklariga yozilgan studentlar
       Student.countDocuments({
-        "department.id": facultyId,
-        "enrolledClubs.0": { $exists: true },
+        "enrolledClubs.club": {
+          $in: await Club.find({ "faculty.id": facultyId }).distinct("_id"),
+        },
+        "enrolledClubs.status": "approved",
+        isActive: true,
       }),
+      // Bugungi davomatlar
       Attendance.countDocuments({
         club: {
           $in: await Club.find({ "faculty.id": facultyId }).distinct("_id"),
@@ -419,6 +465,13 @@ export const getFacultyDashboard = async (req, res) => {
           $lt: new Date(new Date().setHours(23, 59, 59, 999)),
         },
       }),
+      // Kutilayotgan arizalar
+      Enrollment.countDocuments({
+        club: {
+          $in: await Club.find({ "faculty.id": facultyId }).distinct("_id"),
+        },
+        status: "pending",
+      }),
     ]);
 
     const stats = {
@@ -427,9 +480,12 @@ export const getFacultyDashboard = async (req, res) => {
       totalTutors,
       enrolledStudents,
       todayAttendance,
-      enrollmentPercentage: ((enrolledStudents / totalStudents) * 100).toFixed(
-        1
-      ),
+      pendingEnrollments,
+      enrollmentPercentage:
+        totalStudents > 0
+          ? ((enrolledStudents / totalStudents) * 100).toFixed(1)
+          : 0,
+      facultyName: req.user.user.faculty.name,
     };
 
     res.json(formatResponse(true, stats, "Fakultet statistikasi"));
@@ -441,15 +497,25 @@ export const getFacultyDashboard = async (req, res) => {
   }
 };
 
-// Get faculty students
+// Get faculty students - barcha studentlar (filter orqali)
 export const getFacultyStudents = async (req, res) => {
   try {
-    const { groupId, busy, page = 1, limit = 20 } = req.query;
+    const { groupId, busy, search, page = 1, limit = 20 } = req.query;
 
     const filter = {
-      "department.id": req.user.user.faculty.id,
       isActive: true,
     };
+
+    // Agar search bo'lsa, barcha fakultetlardan qidirish
+    if (search) {
+      filter.$or = [
+        { full_name: { $regex: search, $options: "i" } },
+        { student_id_number: { $regex: search, $options: "i" } },
+      ];
+    } else {
+      // Agar search yo'q bo'lsa, faqat fakultet studentlari
+      filter["department.id"] = req.user.user.faculty.id;
+    }
 
     if (groupId) filter["group.id"] = parseInt(groupId);
 
@@ -488,7 +554,7 @@ export const getFacultyStudents = async (req, res) => {
             pages: Math.ceil(total / limit),
           },
         },
-        "Fakultet studentlari"
+        "Studentlar"
       )
     );
   } catch (error) {
@@ -499,10 +565,142 @@ export const getFacultyStudents = async (req, res) => {
   }
 };
 
+// Get club enrollments - barcha fakultetlardan
+export const getClubEnrollments = async (req, res) => {
+  try {
+    const { status = "pending", clubId, page = 1, limit = 20 } = req.query;
+
+    // Fakultet to'garaklarini olish
+    const facultyClubs = await Club.find({
+      "faculty.id": req.user.user.faculty.id,
+      isActive: true,
+    }).distinct("_id");
+
+    const filter = {
+      club: clubId ? clubId : { $in: facultyClubs },
+      status: status,
+    };
+
+    const skip = (page - 1) * limit;
+
+    const [enrollments, total] = await Promise.all([
+      Enrollment.find(filter)
+        .populate(
+          "student",
+          "full_name student_id_number department group image"
+        )
+        .populate("club", "name")
+        .populate("processedBy", "profile.fullName")
+        .skip(skip)
+        .limit(parseInt(limit))
+        .sort("-applicationDate"),
+      Enrollment.countDocuments(filter),
+    ]);
+
+    res.json(
+      formatResponse(
+        true,
+        {
+          enrollments,
+          pagination: {
+            total,
+            page: parseInt(page),
+            limit: parseInt(limit),
+            pages: Math.ceil(total / limit),
+          },
+        },
+        "Arizalar ro'yxati"
+      )
+    );
+  } catch (error) {
+    console.error("Get club enrollments error:", error);
+    res
+      .status(500)
+      .json(formatResponse(false, null, "Server xatosi", error.message));
+  }
+};
+
+// Process enrollment
+export const processEnrollment = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { action, rejectionReason } = req.body;
+
+    if (!["approve", "reject"].includes(action)) {
+      return res
+        .status(400)
+        .json(formatResponse(false, null, "Noto'g'ri amal"));
+    }
+
+    const enrollment = await Enrollment.findById(id)
+      .populate("club")
+      .populate("student");
+
+    if (!enrollment) {
+      return res
+        .status(404)
+        .json(formatResponse(false, null, "Ariza topilmadi"));
+    }
+
+    // Faqat fakultet adminlari o'z to'garaklari uchun arizalarni ko'rib chiqishi mumkin
+    if (enrollment.club.faculty.id !== req.user.user.faculty.id) {
+      return res
+        .status(403)
+        .json(formatResponse(false, null, "Ruxsat berilmagan"));
+    }
+
+    if (enrollment.status !== "pending") {
+      return res
+        .status(400)
+        .json(formatResponse(false, null, "Ariza allaqachon ko'rib chiqilgan"));
+    }
+
+    enrollment.status = action === "approve" ? "approved" : "rejected";
+    enrollment.processedDate = new Date();
+    enrollment.processedBy = req.user.id;
+
+    if (action === "reject" && rejectionReason) {
+      enrollment.rejectionReason = rejectionReason;
+    }
+
+    await enrollment.save();
+
+    // If approved, update student's enrolled clubs
+    if (action === "approve") {
+      const student = await Student.findById(enrollment.student._id);
+
+      // Update enrollment status in student's enrolledClubs array
+      const clubEnrollment = student.enrolledClubs.find(
+        (e) => e.club.toString() === enrollment.club._id.toString()
+      );
+
+      if (clubEnrollment) {
+        clubEnrollment.status = "approved";
+        clubEnrollment.approvedAt = new Date();
+        clubEnrollment.approvedBy = req.user.id;
+        await student.save();
+      }
+    }
+
+    res.json(
+      formatResponse(
+        true,
+        enrollment,
+        action === "approve" ? "Ariza qabul qilindi" : "Ariza rad etildi"
+      )
+    );
+  } catch (error) {
+    console.error("Process enrollment error:", error);
+    res
+      .status(500)
+      .json(formatResponse(false, null, "Server xatosi", error.message));
+  }
+};
+
 // Get faculty attendance
 export const getFacultyAttendance = async (req, res) => {
   try {
-    const { clubId, date, page = 1, limit = 20 } = req.query;
+    const { clubId, startDate, endDate, page = 1, limit = 20 } = req.query;
 
     // Get faculty clubs
     const facultyClubs = await Club.find({
@@ -514,12 +712,14 @@ export const getFacultyAttendance = async (req, res) => {
     };
 
     if (clubId) filter.club = clubId;
-    if (date) {
-      const startDate = new Date(date);
-      startDate.setHours(0, 0, 0, 0);
-      const endDate = new Date(date);
-      endDate.setHours(23, 59, 59, 999);
-      filter.date = { $gte: startDate, $lte: endDate };
+    if (startDate || endDate) {
+      filter.date = {};
+      if (startDate) filter.date.$gte = new Date(startDate);
+      if (endDate) {
+        const end = new Date(endDate);
+        end.setHours(23, 59, 59, 999);
+        filter.date.$lte = end;
+      }
     }
 
     const skip = (page - 1) * limit;
@@ -528,6 +728,7 @@ export const getFacultyAttendance = async (req, res) => {
       Attendance.find(filter)
         .populate("club", "name")
         .populate("markedBy", "profile.fullName")
+        .populate("students.student", "full_name student_id_number")
         .skip(skip)
         .limit(parseInt(limit))
         .sort("-date"),

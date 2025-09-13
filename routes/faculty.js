@@ -11,6 +11,8 @@ import {
   getFacultyDashboard,
   getFacultyStudents,
   getFacultyAttendance,
+  getClubEnrollments,
+  processEnrollment,
 } from "../controllers/facultyController.js";
 import { authenticate } from "../middleware/auth.js";
 import { isFacultyAdmin } from "../middleware/roleCheck.js";
@@ -34,6 +36,10 @@ router.post("/tutor", createTutor);
 router.get("/tutors", getMyTutors);
 router.put("/tutor/:id", updateTutor);
 router.delete("/tutor/:id", deleteTutor);
+
+// Enrollment management
+router.get("/enrollments", getClubEnrollments);
+router.post("/enrollment/:id/process", processEnrollment);
 
 // Reports
 router.get("/students", getFacultyStudents);

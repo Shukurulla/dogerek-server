@@ -251,214 +251,6 @@ export const getGroupsList = async (req, res) => {
   }
 };
 
-// Dashboard statistics
-export const getDashboardStats = async (req, res) => {
-  try {
-    const [
-      totalStudents,
-      totalClubs,
-      totalFacultyAdmins,
-      totalTutors,
-      activeClubs,
-      todayAttendance,
-      enrolledStudents,
-      externalCourseStudents,
-      faculties,
-    ] = await Promise.all([
-      Student.countDocuments({ isActive: true }),
-      Club.countDocuments({ isActive: true }),
-      User.countDocuments({ role: "faculty_admin", isActive: true }),
-      User.countDocuments({ role: "tutor", isActive: true }),
-      Club.countDocuments({ isActive: true }),
-      Attendance.countDocuments({
-        date: {
-          $gte: new Date(new Date().setHours(0, 0, 0, 0)),
-          $lt: new Date(new Date().setHours(23, 59, 59, 999)),
-        },
-      }),
-      Student.countDocuments({
-        "enrolledClubs.0": { $exists: true },
-        "enrolledClubs.status": "approved",
-      }),
-      Student.countDocuments({ "externalCourses.0": { $exists: true } }),
-      getFacultiesFromStudents(),
-    ]);
-
-    // Band bo'lmagan studentlar
-    const busyStudents = enrolledStudents + externalCourseStudents;
-    const notBusyStudents = totalStudents - busyStudents;
-
-    const stats = {
-      totalStudents,
-      totalClubs,
-      totalFacultyAdmins,
-      totalTutors,
-      activeClubs,
-      todayAttendance,
-      enrolledStudents,
-      externalCourseStudents,
-      notBusyStudents,
-      busyStudents,
-      busyPercentage:
-        totalStudents > 0
-          ? ((busyStudents / totalStudents) * 100).toFixed(1)
-          : 0,
-      facultiesCount: faculties.length,
-    };
-
-    res.json(formatResponse(true, stats, "Dashboard statistikasi"));
-  } catch (error) {
-    console.error("Dashboard stats error:", error);
-    res
-      .status(500)
-      .json(formatResponse(false, null, "Server xatosi", error.message));
-  }
-};
-
-// Get all clubs
-export const getAllClubs = async (req, res) => {
-  try {
-    const { facultyId, tutorId, search, page = 1, limit = 20 } = req.query;
-
-    const filter = { isActive: true };
-    if (facultyId) filter["faculty.id"] = parseInt(facultyId);
-    if (tutorId) filter.tutor = tutorId;
-    if (search) {
-      filter.$or = [
-        { name: { $regex: search, $options: "i" } },
-        { description: { $regex: search, $options: "i" } },
-      ];
-    }
-
-    const skip = (page - 1) * limit;
-
-    const [clubs, total] = await Promise.all([
-      Club.find(filter)
-        .populate("tutor", "profile.fullName profile.phone")
-        .skip(skip)
-        .limit(parseInt(limit))
-        .sort("-createdAt"),
-      Club.countDocuments(filter),
-    ]);
-
-    // Add statistics for each club
-    const clubsWithStats = await Promise.all(
-      clubs.map(async (club) => {
-        const approvedStudents = await Student.countDocuments({
-          "enrolledClubs.club": club._id,
-          "enrolledClubs.status": "approved",
-        });
-
-        return {
-          ...club.toObject(),
-          currentStudents: approvedStudents,
-          availableSlots: club.capacity
-            ? club.capacity - approvedStudents
-            : null,
-        };
-      })
-    );
-
-    res.json(
-      formatResponse(
-        true,
-        {
-          clubs: clubsWithStats,
-          pagination: {
-            total,
-            page: parseInt(page),
-            limit: parseInt(limit),
-            pages: Math.ceil(total / limit),
-          },
-        },
-        "To'garaklar ro'yxati"
-      )
-    );
-  } catch (error) {
-    console.error("Get clubs error:", error);
-    res
-      .status(500)
-      .json(formatResponse(false, null, "Server xatosi", error.message));
-  }
-};
-
-// Get all students
-export const getAllStudents = async (req, res) => {
-  try {
-    const {
-      facultyId,
-      groupId,
-      busy,
-      search,
-      page = 1,
-      limit = 20,
-    } = req.query;
-
-    const filter = { isActive: true };
-    if (facultyId) filter["department.id"] = parseInt(facultyId);
-    if (groupId) filter["group.id"] = parseInt(groupId);
-    if (search) {
-      filter.$or = [
-        { full_name: { $regex: search, $options: "i" } },
-        { student_id_number: { $regex: search, $options: "i" } },
-      ];
-    }
-
-    if (busy === "true") {
-      filter.$or = [
-        {
-          "enrolledClubs.0": { $exists: true },
-          "enrolledClubs.status": "approved",
-        },
-        { "externalCourses.0": { $exists: true } },
-      ];
-    } else if (busy === "false") {
-      filter.$and = [
-        {
-          $or: [
-            { "enrolledClubs.0": { $exists: false } },
-            { "enrolledClubs.status": { $ne: "approved" } },
-          ],
-        },
-        { "externalCourses.0": { $exists: false } },
-      ];
-    }
-
-    const skip = (page - 1) * limit;
-
-    const [students, total] = await Promise.all([
-      Student.find(filter)
-        .populate("enrolledClubs.club", "name")
-        .populate("externalCourses", "courseName institutionName")
-        .skip(skip)
-        .limit(parseInt(limit))
-        .sort("full_name"),
-      Student.countDocuments(filter),
-    ]);
-
-    res.json(
-      formatResponse(
-        true,
-        {
-          students,
-          pagination: {
-            total,
-            page: parseInt(page),
-            limit: parseInt(limit),
-            pages: Math.ceil(total / limit),
-          },
-        },
-        "Studentlar ro'yxati"
-      )
-    );
-  } catch (error) {
-    console.error("Get students error:", error);
-    res
-      .status(500)
-      .json(formatResponse(false, null, "Server xatosi", error.message));
-  }
-};
-
 // Get all attendance
 export const getAllAttendance = async (req, res) => {
   try {
@@ -529,5 +321,262 @@ export const syncHemisDataController = async (req, res) => {
       .json(
         formatResponse(false, null, "Sinxronlashda xatolik", error.message)
       );
+  }
+};
+
+// Get all students - barcha fakultetlardan
+export const getAllStudents = async (req, res) => {
+  try {
+    const {
+      facultyId,
+      groupId,
+      busy,
+      search,
+      page = 1,
+      limit = 20,
+    } = req.query;
+
+    const filter = { isActive: true };
+
+    // Fakultet filtrini faqat tanlanganda qo'llash
+    if (facultyId) filter["department.id"] = parseInt(facultyId);
+    if (groupId) filter["group.id"] = parseInt(groupId);
+
+    if (search) {
+      filter.$or = [
+        { full_name: { $regex: search, $options: "i" } },
+        { student_id_number: { $regex: search, $options: "i" } },
+      ];
+    }
+
+    // Band studentlar filtri
+    if (busy === "true") {
+      filter.$or = [
+        {
+          "enrolledClubs.0": { $exists: true },
+          "enrolledClubs.status": "approved",
+        },
+        { "externalCourses.0": { $exists: true } },
+      ];
+    } else if (busy === "false") {
+      filter.$and = [
+        {
+          $or: [
+            { "enrolledClubs.0": { $exists: false } },
+            { "enrolledClubs.status": { $ne: "approved" } },
+          ],
+        },
+        { "externalCourses.0": { $exists: false } },
+      ];
+    }
+
+    const skip = (page - 1) * limit;
+
+    const [students, total] = await Promise.all([
+      Student.find(filter)
+        .populate("enrolledClubs.club", "name faculty")
+        .populate("externalCourses", "courseName institutionName")
+        .skip(skip)
+        .limit(parseInt(limit))
+        .sort("full_name"),
+      Student.countDocuments(filter),
+    ]);
+
+    res.json(
+      formatResponse(
+        true,
+        {
+          students,
+          pagination: {
+            total,
+            page: parseInt(page),
+            limit: parseInt(limit),
+            pages: Math.ceil(total / limit),
+          },
+        },
+        "Studentlar ro'yxati"
+      )
+    );
+  } catch (error) {
+    console.error("Get students error:", error);
+    res
+      .status(500)
+      .json(formatResponse(false, null, "Server xatosi", error.message));
+  }
+};
+
+// Get all clubs - barcha fakultetlardan
+export const getAllClubs = async (req, res) => {
+  try {
+    const { facultyId, tutorId, search, page = 1, limit = 20 } = req.query;
+
+    const filter = { isActive: true };
+    if (facultyId) filter["faculty.id"] = parseInt(facultyId);
+    if (tutorId) filter.tutor = tutorId;
+    if (search) {
+      filter.$or = [
+        { name: { $regex: search, $options: "i" } },
+        { description: { $regex: search, $options: "i" } },
+      ];
+    }
+
+    const skip = (page - 1) * limit;
+
+    const [clubs, total] = await Promise.all([
+      Club.find(filter)
+        .populate("tutor", "profile.fullName profile.phone")
+        .skip(skip)
+        .limit(parseInt(limit))
+        .sort("-createdAt"),
+      Club.countDocuments(filter),
+    ]);
+
+    // Add real statistics for each club
+    const clubsWithStats = await Promise.all(
+      clubs.map(async (club) => {
+        const approvedStudents = await Student.countDocuments({
+          "enrolledClubs.club": club._id,
+          "enrolledClubs.status": "approved",
+          isActive: true,
+        });
+
+        return {
+          ...club.toObject(),
+          currentStudents: approvedStudents,
+          availableSlots: club.capacity
+            ? club.capacity - approvedStudents
+            : null,
+        };
+      })
+    );
+
+    res.json(
+      formatResponse(
+        true,
+        {
+          clubs: clubsWithStats,
+          pagination: {
+            total,
+            page: parseInt(page),
+            limit: parseInt(limit),
+            pages: Math.ceil(total / limit),
+          },
+        },
+        "To'garaklar ro'yxati"
+      )
+    );
+  } catch (error) {
+    console.error("Get clubs error:", error);
+    res
+      .status(500)
+      .json(formatResponse(false, null, "Server xatosi", error.message));
+  }
+};
+
+// Dashboard statistics - barcha fakultetlardan
+export const getDashboardStats = async (req, res) => {
+  try {
+    const [
+      totalStudents,
+      totalClubs,
+      totalFacultyAdmins,
+      totalTutors,
+      activeClubs,
+      todayAttendance,
+      enrolledStudents,
+      externalCourseStudents,
+      faculties,
+    ] = await Promise.all([
+      Student.countDocuments({ isActive: true }),
+      Club.countDocuments({ isActive: true }),
+      User.countDocuments({ role: "faculty_admin", isActive: true }),
+      User.countDocuments({ role: "tutor", isActive: true }),
+      Club.countDocuments({ isActive: true }),
+      Attendance.countDocuments({
+        date: {
+          $gte: new Date(new Date().setHours(0, 0, 0, 0)),
+          $lt: new Date(new Date().setHours(23, 59, 59, 999)),
+        },
+      }),
+      // Real enrolled students count
+      Student.countDocuments({
+        "enrolledClubs.status": "approved",
+        isActive: true,
+      }),
+      Student.countDocuments({
+        "externalCourses.0": { $exists: true },
+        isActive: true,
+      }),
+      getFacultiesFromStudents(),
+    ]);
+
+    // Band bo'lmagan studentlar
+    const busyStudents = enrolledStudents + externalCourseStudents;
+    const notBusyStudents = totalStudents - busyStudents;
+
+    // Cross-faculty enrollment statistics
+    const crossFacultyStats = await Student.aggregate([
+      {
+        $match: {
+          "enrolledClubs.status": "approved",
+          isActive: true,
+        },
+      },
+      {
+        $lookup: {
+          from: "clubs",
+          localField: "enrolledClubs.club",
+          foreignField: "_id",
+          as: "clubDetails",
+        },
+      },
+      {
+        $unwind: "$clubDetails",
+      },
+      {
+        $group: {
+          _id: {
+            studentFaculty: "$department.id",
+            clubFaculty: "$clubDetails.faculty.id",
+          },
+          count: { $sum: 1 },
+        },
+      },
+      {
+        $match: {
+          $expr: { $ne: ["$_id.studentFaculty", "$_id.clubFaculty"] },
+        },
+      },
+      {
+        $count: "crossFacultyEnrollments",
+      },
+    ]);
+
+    const stats = {
+      totalStudents,
+      totalClubs,
+      totalFacultyAdmins,
+      totalTutors,
+      activeClubs,
+      todayAttendance,
+      enrolledStudents,
+      externalCourseStudents,
+      notBusyStudents,
+      busyStudents,
+      busyPercentage:
+        totalStudents > 0
+          ? ((busyStudents / totalStudents) * 100).toFixed(1)
+          : 0,
+      facultiesCount: faculties.length,
+      crossFacultyEnrollments:
+        crossFacultyStats[0]?.crossFacultyEnrollments || 0,
+    };
+
+    res.json(formatResponse(true, stats, "Dashboard statistikasi"));
+  } catch (error) {
+    console.error("Dashboard stats error:", error);
+    res
+      .status(500)
+      .json(formatResponse(false, null, "Server xatosi", error.message));
   }
 };
