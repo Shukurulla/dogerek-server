@@ -140,14 +140,13 @@ export const loginAdmin = async (req, res) => {
 // Student login (Hemis login/parol orqali)
 export const loginStudent = async (req, res) => {
   try {
-    const { student_id, password } = req.body;
+    const { student_id } = req.body;
 
-    if (!student_id || !password) {
+    // Endi faqat student_id talab qilinadi — parol tekshirilmaydi
+    if (!student_id) {
       return res
         .status(400)
-        .json(
-          formatResponse(false, null, "Student ID va parol kiritilishi shart")
-        );
+        .json(formatResponse(false, null, "Student ID kiritilishi shart"));
     }
 
     const student = await Student.findOne({
@@ -161,48 +160,13 @@ export const loginStudent = async (req, res) => {
         .json(formatResponse(false, null, "Student topilmadi"));
     }
 
-    // Agar parol yo'q bo'lsa, birinchi kirish
-    if (!student.password) {
-      // Parolni saqlash
-      const salt = await bcrypt.genSalt(10);
-      student.password = await bcrypt.hash(password, salt);
-      student.lastLogin = new Date();
-      await student.save();
+    // Parol bilan ishlash yoki hash qilish OLIB TASHLANDI
 
-      const token = generateToken(student._id, "student");
-
-      const studentData = {
-        id: student._id,
-        student_id_number: student.student_id_number,
-        full_name: student.full_name,
-        department: student.department,
-        group: student.group,
-        image: student.image,
-        enrolledClubs: student.enrolledClubs,
-        externalCourses: student.externalCourses,
-      };
-
-      return res.json(
-        formatResponse(
-          true,
-          { student: studentData, token, firstLogin: true },
-          "Birinchi kirish muvaffaqiyatli"
-        )
-      );
-    }
-
-    // Parolni tekshirish
-    const isPasswordValid = await bcrypt.compare(password, student.password);
-
-    if (!isPasswordValid) {
-      return res.status(401).json(formatResponse(false, null, "Parol xato"));
-    }
-
-    const token = generateToken(student._id, "student");
-
-    // Update last login
+    // lastLogin yangilash (xohlasangiz olib tashlashingiz mumkin)
     student.lastLogin = new Date();
     await student.save();
+
+    const token = generateToken(student._id, "student");
 
     const studentData = {
       id: student._id,
@@ -215,11 +179,11 @@ export const loginStudent = async (req, res) => {
       externalCourses: student.externalCourses,
     };
 
-    res.json(
+    return res.json(
       formatResponse(
         true,
         { student: studentData, token },
-        "Muvaffaqiyatli kirish"
+        "Muvaffaqiyatli kirish (parol tekshirilmagan)"
       )
     );
   } catch (error) {
