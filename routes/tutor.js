@@ -9,6 +9,9 @@ import {
   addTelegramPost,
   getTutorDashboard,
   getAttendanceByDate,
+  removeStudentFromClub,
+  restoreStudentToClub,
+  getRemovedStudents,
 } from "../controllers/tutorController.js";
 import { authenticate } from "../middleware/auth.js";
 import { isTutor } from "../middleware/roleCheck.js";
@@ -38,5 +41,9 @@ router.get("/attendance/by-date", getAttendanceByDate);
 
 // Telegram posts
 router.post("/attendance/:id/telegram-post", addTelegramPost);
+
+router.post("/club/:clubId/remove-student", removeStudentFromClub);
+router.post("/club/:clubId/restore-student", restoreStudentToClub);
+router.get("/club/:clubId/removed-students", getRemovedStudents);
 
 export default router;

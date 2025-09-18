@@ -608,3 +608,305 @@ export const getTutorDashboard = async (req, res) => {
       .json(formatResponse(false, null, "Server xatosi", error.message));
   }
 };
+export const removeStudentFromClub = async (req, res) => {
+  try {
+    const { clubId } = req.params;
+    const { studentId, reason } = req.body;
+
+    if (!studentId) {
+      return res
+        .status(400)
+        .json(formatResponse(false, null, "Student ID kiritilishi shart"));
+    }
+
+    // Check if club exists and belongs to this tutor
+    const club = await Club.findOne({
+      _id: clubId,
+      tutor: req.user.id,
+      isActive: true,
+    });
+
+    if (!club) {
+      return res
+        .status(404)
+        .json(
+          formatResponse(
+            false,
+            null,
+            "To'garak topilmadi yoki sizga tegishli emas"
+          )
+        );
+    }
+
+    // Find the student
+    const student = await Student.findById(studentId);
+
+    if (!student) {
+      return res
+        .status(404)
+        .json(formatResponse(false, null, "Student topilmadi"));
+    }
+
+    // Check if student is enrolled in this club
+    const enrollmentIndex = student.enrolledClubs.findIndex(
+      (e) => e.club.toString() === clubId && e.status === "approved"
+    );
+
+    if (enrollmentIndex === -1) {
+      return res
+        .status(400)
+        .json(
+          formatResponse(
+            false,
+            null,
+            "Student bu to'garakda ro'yxatdan o'tmagan"
+          )
+        );
+    }
+
+    // Remove student from club's enrolledStudents array (if it exists in Club model)
+    if (club.enrolledStudents) {
+      club.enrolledStudents = club.enrolledStudents.filter(
+        (e) => e.student.toString() !== studentId
+      );
+      await club.save();
+    }
+
+    // Update student's enrolledClubs - change status to removed
+    student.enrolledClubs[enrollmentIndex] = {
+      ...student.enrolledClubs[enrollmentIndex].toObject(),
+      status: "removed",
+      removedAt: new Date(),
+      removedBy: req.user.id,
+      removalReason: reason || "O'qituvchi tomonidan chiqarildi",
+    };
+
+    await student.save();
+
+    // Update enrollment record
+    const enrollment = await Enrollment.findOneAndUpdate(
+      {
+        student: studentId,
+        club: clubId,
+        status: "approved",
+      },
+      {
+        status: "removed",
+        processedDate: new Date(),
+        processedBy: req.user.id,
+        rejectionReason: reason || "O'qituvchi tomonidan chiqarildi",
+        notification: {
+          seen: false,
+          seenAt: null,
+        },
+      },
+      { new: true }
+    );
+
+    // Enrollment model orqali notification yaratiladi
+    // Student keyingi login qilganda yoki enrollments chekida ko'radi
+
+    res.json(
+      formatResponse(
+        true,
+        {
+          student: {
+            id: student._id,
+            full_name: student.full_name,
+            student_id_number: student.student_id_number,
+          },
+          club: {
+            id: club._id,
+            name: club.name,
+          },
+          enrollment: enrollment,
+        },
+        "Student to'garakdan muvaffaqiyatli chiqarildi"
+      )
+    );
+  } catch (error) {
+    console.error("Remove student from club error:", error);
+    res
+      .status(500)
+      .json(formatResponse(false, null, "Server xatosi", error.message));
+  }
+};
+
+// Restore student to club (agar kerak bo'lsa)
+export const restoreStudentToClub = async (req, res) => {
+  try {
+    const { clubId } = req.params;
+    const { studentId } = req.body;
+
+    // Check if club exists and belongs to this tutor
+    const club = await Club.findOne({
+      _id: clubId,
+      tutor: req.user.id,
+      isActive: true,
+    });
+
+    if (!club) {
+      return res
+        .status(404)
+        .json(formatResponse(false, null, "To'garak topilmadi"));
+    }
+
+    // Find the student
+    const student = await Student.findById(studentId);
+
+    if (!student) {
+      return res
+        .status(404)
+        .json(formatResponse(false, null, "Student topilmadi"));
+    }
+
+    // Check if student was removed from this club
+    const enrollmentIndex = student.enrolledClubs.findIndex(
+      (e) => e.club.toString() === clubId && e.status === "removed"
+    );
+
+    if (enrollmentIndex === -1) {
+      return res
+        .status(400)
+        .json(
+          formatResponse(false, null, "Student bu to'garakdan chiqarilmagan")
+        );
+    }
+
+    // Check capacity
+    if (club.capacity) {
+      const activeStudents = await Student.countDocuments({
+        "enrolledClubs.club": clubId,
+        "enrolledClubs.status": "approved",
+        isActive: true,
+      });
+
+      if (activeStudents >= club.capacity) {
+        return res
+          .status(400)
+          .json(formatResponse(false, null, "To'garak to'lgan"));
+      }
+    }
+
+    // Restore student in club
+    student.enrolledClubs[enrollmentIndex].status = "approved";
+    student.enrolledClubs[enrollmentIndex].approvedAt = new Date();
+    student.enrolledClubs[enrollmentIndex].approvedBy = req.user.id;
+    delete student.enrolledClubs[enrollmentIndex].removedAt;
+    delete student.enrolledClubs[enrollmentIndex].removedBy;
+    delete student.enrolledClubs[enrollmentIndex].removalReason;
+
+    await student.save();
+
+    // Update enrollment record
+    await Enrollment.findOneAndUpdate(
+      {
+        student: studentId,
+        club: clubId,
+        status: "removed",
+      },
+      {
+        status: "approved",
+        processedDate: new Date(),
+        processedBy: req.user.id,
+        rejectionReason: null,
+        notification: {
+          seen: false,
+          seenAt: null,
+        },
+      }
+    );
+
+    // Add back to club's enrolledStudents if needed
+    if (
+      club.enrolledStudents &&
+      !club.enrolledStudents.find((e) => e.student.toString() === studentId)
+    ) {
+      club.enrolledStudents.push({
+        student: studentId,
+        enrolledAt: new Date(),
+        status: "active",
+      });
+      await club.save();
+    }
+
+    res.json(
+      formatResponse(
+        true,
+        {
+          student: {
+            id: student._id,
+            full_name: student.full_name,
+          },
+          club: {
+            id: club._id,
+            name: club.name,
+          },
+        },
+        "Student to'garakka qayta qo'shildi"
+      )
+    );
+  } catch (error) {
+    console.error("Restore student to club error:", error);
+    res
+      .status(500)
+      .json(formatResponse(false, null, "Server xatosi", error.message));
+  }
+};
+
+// Get removed students list
+export const getRemovedStudents = async (req, res) => {
+  try {
+    const { clubId } = req.params;
+
+    // Check if club belongs to this tutor
+    const club = await Club.findOne({
+      _id: clubId,
+      tutor: req.user.id,
+      isActive: true,
+    });
+
+    if (!club) {
+      return res
+        .status(404)
+        .json(formatResponse(false, null, "To'garak topilmadi"));
+    }
+
+    // Get removed students
+    const students = await Student.find({
+      "enrolledClubs.club": clubId,
+      "enrolledClubs.status": "removed",
+    })
+      .select(
+        "full_name student_id_number department group image enrolledClubs"
+      )
+      .sort("-enrolledClubs.removedAt");
+
+    // Format response with removal details
+    const formattedStudents = students.map((student) => {
+      const enrollment = student.enrolledClubs.find(
+        (e) => e.club.toString() === clubId && e.status === "removed"
+      );
+
+      return {
+        _id: student._id,
+        full_name: student.full_name,
+        student_id_number: student.student_id_number,
+        department: student.department,
+        group: student.group,
+        image: student.image,
+        removedAt: enrollment?.removedAt,
+        removalReason: enrollment?.removalReason,
+      };
+    });
+
+    res.json(
+      formatResponse(true, formattedStudents, "Chiqarilgan studentlar ro'yxati")
+    );
+  } catch (error) {
+    console.error("Get removed students error:", error);
+    res
+      .status(500)
+      .json(formatResponse(false, null, "Server xatosi", error.message));
+  }
+};

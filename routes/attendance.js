@@ -147,9 +147,8 @@ router.get("/statistics", isTutor, async (req, res) => {
       ]);
 
       const percentage =
-        attendanceStats.length > 0 && attendanceStats[0].totalPossible > 0
-          ? (attendanceStats[0].totalPresent /
-              attendanceStats[0].totalPossible) *
+        dayAttendance.length > 0 && dayAttendance[0].totalPossible > 0
+          ? (dayAttendance[0].totalPresent / dayAttendance[0].totalPossible) *
             100
           : 0;
 
@@ -161,6 +160,48 @@ router.get("/statistics", isTutor, async (req, res) => {
 
     // Generate monthly data if needed
     const monthlyData = [];
+
+    // If month view is requested
+    if (groupBy === "month") {
+      const currentDate = new Date();
+      const year = currentDate.getFullYear();
+      const month = currentDate.getMonth();
+      const daysInMonth = new Date(year, month + 1, 0).getDate();
+
+      for (let day = 1; day <= daysInMonth; day++) {
+        const dayStart = new Date(year, month, day, 0, 0, 0);
+        const dayEnd = new Date(year, month, day, 23, 59, 59);
+
+        const dayData = await Attendance.aggregate([
+          {
+            $match: {
+              ...filter,
+              date: { $gte: dayStart, $lte: dayEnd },
+            },
+          },
+          { $unwind: "$students" },
+          {
+            $group: {
+              _id: null,
+              totalPresent: { $sum: { $cond: ["$students.present", 1, 0] } },
+              totalPossible: { $sum: 1 },
+            },
+          },
+        ]);
+
+        if (dayData.length > 0) {
+          const percentage =
+            dayData[0].totalPossible > 0
+              ? (dayData[0].totalPresent / dayData[0].totalPossible) * 100
+              : 0;
+
+          monthlyData.push({
+            date: day,
+            attendance: percentage.toFixed(1),
+          });
+        }
+      }
+    }
 
     res.json({
       success: true,

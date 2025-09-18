@@ -12,6 +12,10 @@ import {
   getMyAttendance,
   getStudentDashboard,
   updateProfile,
+  getMyNotifications,
+  markNotificationAsSeen,
+  getNotificationsCount,
+  markAllNotificationsAsSeen,
 } from "../controllers/studentController.js";
 import { authenticate } from "../middleware/auth.js";
 import { isStudent } from "../middleware/roleCheck.js";
@@ -43,6 +47,10 @@ router.post("/external-course", addExternalCourse);
 router.get("/external-courses", getMyExternalCourses);
 router.put("/external-course/:id", updateExternalCourse);
 router.delete("/external-course/:id", deleteExternalCourse);
+router.get("/notifications", getMyNotifications);
+router.get("/notifications/count", getNotificationsCount);
+router.put("/notification/:enrollmentId/seen", markNotificationAsSeen);
+router.put("/notifications/mark-all-seen", markAllNotificationsAsSeen);
 
 // Attendance
 router.get("/attendance", getMyAttendance);

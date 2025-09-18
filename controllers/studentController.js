@@ -601,3 +601,146 @@ export const updateProfile = async (req, res) => {
       .json(formatResponse(false, null, "Server xatosi", error.message));
   }
 };
+export const getMyNotifications = async (req, res) => {
+  try {
+    const studentId = req.user.id;
+
+    // Get all enrollments with notifications
+    const enrollments = await Enrollment.find({
+      student: studentId,
+      "notification.seen": false,
+      status: { $in: ["approved", "rejected", "removed"] },
+    })
+      .populate("club", "name")
+      .populate("processedBy", "profile.fullName")
+      .sort("-processedDate");
+
+    // Format notifications
+    const notifications = enrollments.map((enrollment) => {
+      let message = "";
+      let type = "info";
+
+      switch (enrollment.status) {
+        case "approved":
+          message = `"${enrollment.club.name}" to'garagiga qabul qilindingiz!`;
+          type = "success";
+          break;
+        case "rejected":
+          message = `"${enrollment.club.name}" to'garagiga arizangiz rad etildi. Sabab: ${enrollment.rejectionReason}`;
+          type = "error";
+          break;
+        case "removed":
+          message = `"${
+            enrollment.club.name
+          }" to'garagidan chiqarildingiz. Sabab: ${
+            enrollment.rejectionReason || "O'qituvchi qarori"
+          }`;
+          type = "warning";
+          break;
+      }
+
+      return {
+        _id: enrollment._id,
+        type,
+        message,
+        club: enrollment.club,
+        date: enrollment.processedDate,
+        processedBy: enrollment.processedBy,
+        seen: enrollment.notification.seen,
+      };
+    });
+
+    res.json(formatResponse(true, notifications, "Bildirishnomalar ro'yxati"));
+  } catch (error) {
+    console.error("Get notifications error:", error);
+    res
+      .status(500)
+      .json(formatResponse(false, null, "Server xatosi", error.message));
+  }
+};
+
+// Mark notification as seen
+export const markNotificationAsSeen = async (req, res) => {
+  try {
+    const { enrollmentId } = req.params;
+    const studentId = req.user.id;
+
+    const enrollment = await Enrollment.findOneAndUpdate(
+      {
+        _id: enrollmentId,
+        student: studentId,
+      },
+      {
+        "notification.seen": true,
+        "notification.seenAt": new Date(),
+      },
+      { new: true }
+    );
+
+    if (!enrollment) {
+      return res
+        .status(404)
+        .json(formatResponse(false, null, "Bildirishnoma topilmadi"));
+    }
+
+    res.json(
+      formatResponse(true, enrollment, "Bildirishnoma o'qildi deb belgilandi")
+    );
+  } catch (error) {
+    console.error("Mark notification as seen error:", error);
+    res
+      .status(500)
+      .json(formatResponse(false, null, "Server xatosi", error.message));
+  }
+};
+
+// Get notifications count
+export const getNotificationsCount = async (req, res) => {
+  try {
+    const studentId = req.user.id;
+
+    const count = await Enrollment.countDocuments({
+      student: studentId,
+      "notification.seen": false,
+      status: { $in: ["approved", "rejected", "removed"] },
+    });
+
+    res.json(formatResponse(true, { count }, "Bildirishnomalar soni"));
+  } catch (error) {
+    console.error("Get notifications count error:", error);
+    res
+      .status(500)
+      .json(formatResponse(false, null, "Server xatosi", error.message));
+  }
+};
+
+// Mark all notifications as seen
+export const markAllNotificationsAsSeen = async (req, res) => {
+  try {
+    const studentId = req.user.id;
+
+    const result = await Enrollment.updateMany(
+      {
+        student: studentId,
+        "notification.seen": false,
+      },
+      {
+        "notification.seen": true,
+        "notification.seenAt": new Date(),
+      }
+    );
+
+    res.json(
+      formatResponse(
+        true,
+        { updated: result.modifiedCount },
+        "Barcha bildirishnomalar o'qildi deb belgilandi"
+      )
+    );
+  } catch (error) {
+    console.error("Mark all notifications as seen error:", error);
+    res
+      .status(500)
+      .json(formatResponse(false, null, "Server xatosi", error.message));
+  }
+};

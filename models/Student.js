@@ -94,7 +94,7 @@ const studentSchema = new mongoose.Schema({
       club: { type: mongoose.Schema.Types.ObjectId, ref: "Club" },
       status: {
         type: String,
-        enum: ["pending", "approved", "rejected"],
+        enum: ["pending", "approved", "rejected", "removed"],
         default: "pending",
       },
       enrolledAt: { type: Date, default: Date.now },
