@@ -33,12 +33,12 @@ router.post("/application/:id/process", processApplication);
 
 // Attendance
 router.post("/attendance", markAttendance);
-router.get("/attendance/:clubId", getAttendanceHistory);
 router.put("/attendance/:id", updateAttendance);
 
 // Get attendance by specific date
 router.get("/attendance/by-date", getAttendanceByDate);
 
+router.get("/attendance/:clubId", getAttendanceHistory);
 // Telegram posts
 router.post("/attendance/:id/telegram-post", addTelegramPost);
 
