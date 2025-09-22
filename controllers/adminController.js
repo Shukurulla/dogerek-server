@@ -9,6 +9,174 @@ import {
   getGroupsFromStudents,
 } from "../utils/syncHemisData.js";
 
+// Dashboard statistics - CORRECT calculation
+export const getDashboardStats = async (req, res) => {
+  try {
+    // Get all necessary data
+    const [
+      totalStudents,
+      totalClubs,
+      totalFacultyAdmins,
+      totalTutors,
+      activeClubs,
+      todayAttendance,
+      faculties,
+    ] = await Promise.all([
+      Student.countDocuments({ isActive: true }),
+      Club.countDocuments({ isActive: true }),
+      User.countDocuments({ role: "faculty_admin", isActive: true }),
+      User.countDocuments({ role: "tutor", isActive: true }),
+      Club.countDocuments({ isActive: true }),
+      Attendance.countDocuments({
+        date: {
+          $gte: new Date(new Date().setHours(0, 0, 0, 0)),
+          $lt: new Date(new Date().setHours(23, 59, 59, 999)),
+        },
+      }),
+      getFacultiesFromStudents(),
+    ]);
+
+    // Get students with approved clubs
+    const studentsInClubs = await Student.aggregate([
+      {
+        $match: {
+          isActive: true,
+          enrolledClubs: {
+            $elemMatch: {
+              status: "approved",
+            },
+          },
+        },
+      },
+      {
+        $count: "total",
+      },
+    ]);
+
+    // Get students with external courses
+    const studentsInExternal = await Student.aggregate([
+      {
+        $match: {
+          isActive: true,
+          externalCourses: { $exists: true, $not: { $size: 0 } },
+        },
+      },
+      {
+        $count: "total",
+      },
+    ]);
+
+    // Get students who have BOTH clubs AND external courses (to avoid double counting)
+    const studentsInBoth = await Student.aggregate([
+      {
+        $match: {
+          isActive: true,
+          $and: [
+            {
+              enrolledClubs: {
+                $elemMatch: {
+                  status: "approved",
+                },
+              },
+            },
+            {
+              externalCourses: { $exists: true, $not: { $size: 0 } },
+            },
+          ],
+        },
+      },
+      {
+        $count: "total",
+      },
+    ]);
+
+    const enrolledStudents = studentsInClubs[0]?.total || 0;
+    const externalCourseStudents = studentsInExternal[0]?.total || 0;
+    const studentsInBothCount = studentsInBoth[0]?.total || 0;
+
+    // Calculate busy students correctly (avoid double counting)
+    // busyStudents = studentsInClubs + studentsInExternal - studentsInBoth
+    const busyStudents =
+      enrolledStudents + externalCourseStudents - studentsInBothCount;
+    const notBusyStudents = totalStudents - busyStudents;
+
+    // Cross-faculty enrollment statistics
+    const crossFacultyStats = await Student.aggregate([
+      {
+        $match: {
+          "enrolledClubs.status": "approved",
+          isActive: true,
+        },
+      },
+      {
+        $lookup: {
+          from: "clubs",
+          localField: "enrolledClubs.club",
+          foreignField: "_id",
+          as: "clubDetails",
+        },
+      },
+      {
+        $unwind: "$clubDetails",
+      },
+      {
+        $group: {
+          _id: {
+            studentFaculty: "$department.id",
+            clubFaculty: "$clubDetails.faculty.id",
+          },
+          count: { $sum: 1 },
+        },
+      },
+      {
+        $match: {
+          $expr: { $ne: ["$_id.studentFaculty", "$_id.clubFaculty"] },
+        },
+      },
+      {
+        $count: "crossFacultyEnrollments",
+      },
+    ]);
+
+    const stats = {
+      totalStudents,
+      totalClubs,
+      totalFacultyAdmins,
+      totalTutors,
+      activeClubs,
+      todayAttendance,
+      enrolledStudents, // Faqat to'garaklarda
+      externalCourseStudents, // Faqat tashqi kurslarda
+      busyStudents, // Jami band (to'garak yoki tashqi kurs)
+      notBusyStudents, // Hech qayerda emas
+      busyPercentage:
+        totalStudents > 0
+          ? ((busyStudents / totalStudents) * 100).toFixed(1)
+          : "0",
+      facultiesCount: faculties.length,
+      crossFacultyEnrollments:
+        crossFacultyStats[0]?.crossFacultyEnrollments || 0,
+      // Debug uchun qo'shimcha ma'lumot
+      debug: {
+        enrolledOnly: enrolledStudents,
+        externalOnly: externalCourseStudents,
+        bothClubAndExternal: studentsInBothCount,
+        calculatedBusy: busyStudents,
+        calculatedNotBusy: notBusyStudents,
+      },
+    };
+
+    console.log("Dashboard stats with debug:", stats); // Debug log
+
+    res.json(formatResponse(true, stats, "Dashboard statistikasi"));
+  } catch (error) {
+    console.error("Dashboard stats error:", error);
+    res
+      .status(500)
+      .json(formatResponse(false, null, "Server xatosi", error.message));
+  }
+};
+
 // Create faculty admin
 export const createFacultyAdmin = async (req, res) => {
   try {
@@ -324,7 +492,7 @@ export const syncHemisDataController = async (req, res) => {
   }
 };
 
-// Get all students - barcha fakultetlardan
+// Get all students - with proper busy calculation
 export const getAllStudents = async (req, res) => {
   try {
     const {
@@ -349,38 +517,35 @@ export const getAllStudents = async (req, res) => {
       ];
     }
 
-    // Band studentlar filtri
-    if (busy === "true") {
-      filter.$or = [
-        {
-          "enrolledClubs.0": { $exists: true },
-          "enrolledClubs.status": "approved",
-        },
-        { "externalCourses.0": { $exists: true } },
-      ];
-    } else if (busy === "false") {
-      filter.$and = [
-        {
-          $or: [
-            { "enrolledClubs.0": { $exists: false } },
-            { "enrolledClubs.status": { $ne: "approved" } },
-          ],
-        },
-        { "externalCourses.0": { $exists: false } },
-      ];
-    }
-
     const skip = (page - 1) * limit;
 
-    const [students, total] = await Promise.all([
-      Student.find(filter)
-        .populate("enrolledClubs.club", "name faculty")
-        .populate("externalCourses", "courseName institutionName")
-        .skip(skip)
-        .limit(parseInt(limit))
-        .sort("full_name"),
-      Student.countDocuments(filter),
-    ]);
+    let students = await Student.find(filter)
+      .populate("enrolledClubs.club", "name faculty")
+      .populate("externalCourses", "courseName institutionName")
+      .skip(skip)
+      .limit(parseInt(limit))
+      .sort("full_name");
+
+    // Filter by busy status after population
+    if (busy === "true") {
+      students = students.filter((student) => {
+        const hasApprovedClub = student.enrolledClubs?.some(
+          (enrollment) => enrollment.status === "approved"
+        );
+        const hasExternalCourse = student.externalCourses?.length > 0;
+        return hasApprovedClub || hasExternalCourse;
+      });
+    } else if (busy === "false") {
+      students = students.filter((student) => {
+        const hasApprovedClub = student.enrolledClubs?.some(
+          (enrollment) => enrollment.status === "approved"
+        );
+        const hasExternalCourse = student.externalCourses?.length > 0;
+        return !hasApprovedClub && !hasExternalCourse;
+      });
+    }
+
+    const total = await Student.countDocuments(filter);
 
     res.json(
       formatResponse(
@@ -405,7 +570,7 @@ export const getAllStudents = async (req, res) => {
   }
 };
 
-// Get all clubs - barcha fakultetlardan
+// Get all clubs - with real student counts
 export const getAllClubs = async (req, res) => {
   try {
     const { facultyId, tutorId, search, page = 1, limit = 20 } = req.query;
@@ -444,7 +609,7 @@ export const getAllClubs = async (req, res) => {
           ...club.toObject(),
           currentStudents: approvedStudents,
           availableSlots: club.capacity
-            ? club.capacity - approvedStudents
+            ? Math.max(0, club.capacity - approvedStudents)
             : null,
         };
       })
@@ -467,114 +632,6 @@ export const getAllClubs = async (req, res) => {
     );
   } catch (error) {
     console.error("Get clubs error:", error);
-    res
-      .status(500)
-      .json(formatResponse(false, null, "Server xatosi", error.message));
-  }
-};
-
-// Dashboard statistics - barcha fakultetlardan
-export const getDashboardStats = async (req, res) => {
-  try {
-    const [
-      totalStudents,
-      totalClubs,
-      totalFacultyAdmins,
-      totalTutors,
-      activeClubs,
-      todayAttendance,
-      enrolledStudents,
-      externalCourseStudents,
-      faculties,
-    ] = await Promise.all([
-      Student.countDocuments({ isActive: true }),
-      Club.countDocuments({ isActive: true }),
-      User.countDocuments({ role: "faculty_admin", isActive: true }),
-      User.countDocuments({ role: "tutor", isActive: true }),
-      Club.countDocuments({ isActive: true }),
-      Attendance.countDocuments({
-        date: {
-          $gte: new Date(new Date().setHours(0, 0, 0, 0)),
-          $lt: new Date(new Date().setHours(23, 59, 59, 999)),
-        },
-      }),
-      // Real enrolled students count
-      Student.countDocuments({
-        "enrolledClubs.status": "approved",
-        isActive: true,
-      }),
-      Student.countDocuments({
-        "externalCourses.0": { $exists: true },
-        isActive: true,
-      }),
-      getFacultiesFromStudents(),
-    ]);
-
-    // Band bo'lmagan studentlar
-    const busyStudents = enrolledStudents + externalCourseStudents;
-    const notBusyStudents = totalStudents - busyStudents;
-
-    // Cross-faculty enrollment statistics
-    const crossFacultyStats = await Student.aggregate([
-      {
-        $match: {
-          "enrolledClubs.status": "approved",
-          isActive: true,
-        },
-      },
-      {
-        $lookup: {
-          from: "clubs",
-          localField: "enrolledClubs.club",
-          foreignField: "_id",
-          as: "clubDetails",
-        },
-      },
-      {
-        $unwind: "$clubDetails",
-      },
-      {
-        $group: {
-          _id: {
-            studentFaculty: "$department.id",
-            clubFaculty: "$clubDetails.faculty.id",
-          },
-          count: { $sum: 1 },
-        },
-      },
-      {
-        $match: {
-          $expr: { $ne: ["$_id.studentFaculty", "$_id.clubFaculty"] },
-        },
-      },
-      {
-        $count: "crossFacultyEnrollments",
-      },
-    ]);
-
-    const stats = {
-      totalStudents,
-      totalClubs,
-      totalFacultyAdmins,
-      totalTutors,
-      activeClubs,
-      todayAttendance,
-      enrolledStudents,
-      externalCourseStudents,
-      notBusyStudents,
-      busyStudents,
-      busyPercentage:
-        totalStudents > 0
-          ? ((busyStudents / totalStudents) * 100).toFixed(1)
-          : 0,
-      facultiesCount: faculties.length,
-      crossFacultyEnrollments:
-        crossFacultyStats[0]?.crossFacultyEnrollments || 0,
-    };
-
-    res.json(formatResponse(true, stats, "Dashboard statistikasi"));
-  } catch (error) {
-    console.error("Dashboard stats error:", error);
     res
       .status(500)
       .json(formatResponse(false, null, "Server xatosi", error.message));
