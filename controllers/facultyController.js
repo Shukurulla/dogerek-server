@@ -1,17 +1,22 @@
 import User from "../models/User.js";
 import Student from "../models/Student.js";
 import Club from "../models/Club.js";
+import Category from "../models/Category.js";
 import Attendance from "../models/Attendance.js";
 import Enrollment from "../models/Enrollment.js";
 import { formatResponse, formatPhoneNumber } from "../utils/formatters.js";
-import { getFacultiesFromStudents } from "../utils/syncHemisData.js";
+import {
+  getFacultiesFromStudents,
+  getGroupsFromStudents,
+} from "../utils/syncHemisData.js";
 
-// Create club
+// Create club - CATEGORY SUPPORT ADDED
 export const createClub = async (req, res) => {
   try {
     const {
       name,
       description,
+      categoryId, // NEW: Category field
       tutorId,
       schedule,
       location,
@@ -20,7 +25,7 @@ export const createClub = async (req, res) => {
     } = req.body;
 
     // Validation
-    if (!name || !tutorId || !schedule) {
+    if (!name || !categoryId || !tutorId || !schedule) {
       return res
         .status(400)
         .json(
@@ -32,7 +37,17 @@ export const createClub = async (req, res) => {
         );
     }
 
-    // Check tutor - faqat shu fakultetdagi tutorlar
+    // Check category exists and is active
+    const category = await Category.findById(categoryId);
+    if (!category || !category.isActive) {
+      return res
+        .status(400)
+        .json(
+          formatResponse(false, null, "Kategoriya topilmadi yoki faol emas")
+        );
+    }
+
+    // Check tutor - faqat shu fakultetdagi o'qituvchilar
     const tutor = await User.findOne({
       _id: tutorId,
       role: "tutor",
@@ -46,15 +61,16 @@ export const createClub = async (req, res) => {
           formatResponse(
             false,
             null,
-            "Tutor topilmadi yoki bu fakultetga tegishli emas"
+            "O'qituvchi topilmadi yoki bu fakultetga tegishli emas"
           )
         );
     }
 
-    // Create club
+    // Create club with category
     const newClub = new Club({
       name,
       description,
+      category: categoryId, // NEW: Save category
       faculty: req.user.user.faculty,
       tutor: tutorId,
       schedule,
@@ -70,6 +86,9 @@ export const createClub = async (req, res) => {
     tutor.assignedClubs.push(newClub._id);
     await tutor.save();
 
+    // Populate category before sending response
+    await newClub.populate("category", "name color icon");
+
     res
       .status(201)
       .json(formatResponse(true, newClub, "To'garak muvaffaqiyatli yaratildi"));
@@ -81,10 +100,10 @@ export const createClub = async (req, res) => {
   }
 };
 
-// Get my faculty clubs
+// Get my faculty clubs - WITH CATEGORY FILTER
 export const getMyClubs = async (req, res) => {
   try {
-    const { page = 1, limit = 20 } = req.query;
+    const { page = 1, limit = 20, categoryId } = req.query;
     const skip = (page - 1) * limit;
 
     const filter = {
@@ -92,9 +111,15 @@ export const getMyClubs = async (req, res) => {
       isActive: true,
     };
 
+    // Add category filter if provided
+    if (categoryId) {
+      filter.category = categoryId;
+    }
+
     const [clubs, total] = await Promise.all([
       Club.find(filter)
         .populate("tutor", "profile.fullName profile.phone")
+        .populate("category", "name color icon") // NEW: Populate category
         .skip(skip)
         .limit(parseInt(limit))
         .sort("-createdAt"),
@@ -142,7 +167,7 @@ export const getMyClubs = async (req, res) => {
   }
 };
 
-// Update club
+// Update club - WITH CATEGORY UPDATE
 export const updateClub = async (req, res) => {
   try {
     const { id } = req.params;
@@ -159,6 +184,19 @@ export const updateClub = async (req, res) => {
         .json(formatResponse(false, null, "To'garak topilmadi"));
     }
 
+    // If changing category
+    if (updates.categoryId) {
+      const category = await Category.findById(updates.categoryId);
+      if (!category || !category.isActive) {
+        return res
+          .status(400)
+          .json(
+            formatResponse(false, null, "Kategoriya topilmadi yoki faol emas")
+          );
+      }
+      club.category = updates.categoryId;
+    }
+
     // Update allowed fields
     const allowedUpdates = [
       "name",
@@ -169,6 +207,7 @@ export const updateClub = async (req, res) => {
       "telegramChannelLink",
       "isActive",
     ];
+
     allowedUpdates.forEach((field) => {
       if (updates[field] !== undefined) {
         club[field] = updates[field];
@@ -186,7 +225,7 @@ export const updateClub = async (req, res) => {
       if (!newTutor) {
         return res
           .status(400)
-          .json(formatResponse(false, null, "Yangi tutor topilmadi"));
+          .json(formatResponse(false, null, "Yangi o'qituvchi topilmadi"));
       }
 
       // Remove from old tutor
@@ -207,6 +246,9 @@ export const updateClub = async (req, res) => {
 
     club.updatedAt = new Date();
     await club.save();
+
+    // Populate category before sending response
+    await club.populate("category", "name color icon");
 
     res.json(formatResponse(true, club, "To'garak ma'lumotlari yangilandi"));
   } catch (error) {
@@ -247,7 +289,7 @@ export const deleteClub = async (req, res) => {
   }
 };
 
-// Create tutor
+// Create tutor - RENAMED TO O'QITUVCHI
 export const createTutor = async (req, res) => {
   try {
     const { username, password, fullName, phone, email } = req.body;
@@ -276,7 +318,7 @@ export const createTutor = async (req, res) => {
     // Format phone number
     const formattedPhone = phone ? formatPhoneNumber(phone).db : null;
 
-    // Create new tutor
+    // Create new tutor (o'qituvchi)
     const newTutor = new User({
       username,
       password,
@@ -298,7 +340,9 @@ export const createTutor = async (req, res) => {
 
     res
       .status(201)
-      .json(formatResponse(true, tutorData, "Tutor muvaffaqiyatli yaratildi"));
+      .json(
+        formatResponse(true, tutorData, "O'qituvchi muvaffaqiyatli yaratildi")
+      );
   } catch (error) {
     console.error("Create tutor error:", error);
     res
@@ -307,7 +351,7 @@ export const createTutor = async (req, res) => {
   }
 };
 
-// Get my faculty tutors
+// Get my faculty tutors - RENAMED TO O'QITUVCHILAR
 export const getMyTutors = async (req, res) => {
   try {
     const tutors = await User.find({
@@ -319,7 +363,7 @@ export const getMyTutors = async (req, res) => {
       .select("-password")
       .sort("-createdAt");
 
-    res.json(formatResponse(true, tutors, "Fakultet tutorlari"));
+    res.json(formatResponse(true, tutors, "Fakultet o'qituvchilari"));
   } catch (error) {
     console.error("Get tutors error:", error);
     res
@@ -328,7 +372,7 @@ export const getMyTutors = async (req, res) => {
   }
 };
 
-// Update tutor
+// Update tutor - RENAMED TO O'QITUVCHI
 export const updateTutor = async (req, res) => {
   try {
     const { id } = req.params;
@@ -343,7 +387,7 @@ export const updateTutor = async (req, res) => {
     if (!tutor) {
       return res
         .status(404)
-        .json(formatResponse(false, null, "Tutor topilmadi"));
+        .json(formatResponse(false, null, "O'qituvchi topilmadi"));
     }
 
     // Update fields
@@ -360,7 +404,9 @@ export const updateTutor = async (req, res) => {
     const tutorData = tutor.toObject();
     delete tutorData.password;
 
-    res.json(formatResponse(true, tutorData, "Tutor ma'lumotlari yangilandi"));
+    res.json(
+      formatResponse(true, tutorData, "O'qituvchi ma'lumotlari yangilandi")
+    );
   } catch (error) {
     console.error("Update tutor error:", error);
     res
@@ -369,7 +415,7 @@ export const updateTutor = async (req, res) => {
   }
 };
 
-// Delete tutor
+// Delete tutor - RENAMED TO O'QITUVCHI
 export const deleteTutor = async (req, res) => {
   try {
     const { id } = req.params;
@@ -383,7 +429,7 @@ export const deleteTutor = async (req, res) => {
     if (!tutor) {
       return res
         .status(404)
-        .json(formatResponse(false, null, "Tutor topilmadi"));
+        .json(formatResponse(false, null, "O'qituvchi topilmadi"));
     }
 
     // Check if tutor has active clubs
@@ -399,7 +445,7 @@ export const deleteTutor = async (req, res) => {
           formatResponse(
             false,
             null,
-            "Bu tutorga biriktirilgan faol to'garaklar mavjud"
+            "Bu o'qituvchiga biriktirilgan faol to'garaklar mavjud"
           )
         );
     }
@@ -409,7 +455,7 @@ export const deleteTutor = async (req, res) => {
     tutor.updatedAt = new Date();
     await tutor.save();
 
-    res.json(formatResponse(true, null, "Tutor o'chirildi"));
+    res.json(formatResponse(true, null, "O'qituvchi o'chirildi"));
   } catch (error) {
     console.error("Delete tutor error:", error);
     res
@@ -418,10 +464,15 @@ export const deleteTutor = async (req, res) => {
   }
 };
 
-// Faculty dashboard - real ma'lumotlar
+// Faculty dashboard - WITH CATEGORIES
 export const getFacultyDashboard = async (req, res) => {
   try {
     const facultyId = req.user.user.faculty.id;
+
+    // Get all active categories for statistics
+    const categories = await Category.find({ isActive: true }).select(
+      "name color icon _id"
+    );
 
     const [
       totalStudents,
@@ -441,7 +492,7 @@ export const getFacultyDashboard = async (req, res) => {
         "faculty.id": facultyId,
         isActive: true,
       }),
-      // Fakultetdagi tutorlar
+      // Fakultetdagi o'qituvchilar
       User.countDocuments({
         role: "tutor",
         "faculty.id": facultyId,
@@ -474,6 +525,21 @@ export const getFacultyDashboard = async (req, res) => {
       }),
     ]);
 
+    // Category statistics
+    const categoryStats = await Promise.all(
+      categories.map(async (category) => {
+        const clubCount = await Club.countDocuments({
+          "faculty.id": facultyId,
+          category: category._id,
+          isActive: true,
+        });
+        return {
+          ...category.toObject(),
+          clubCount,
+        };
+      })
+    );
+
     const stats = {
       totalStudents,
       totalClubs,
@@ -486,6 +552,7 @@ export const getFacultyDashboard = async (req, res) => {
           ? ((enrolledStudents / totalStudents) * 100).toFixed(1)
           : 0,
       facultyName: req.user.user.faculty.name,
+      categories: categoryStats, // NEW: Categories with counts
     };
 
     res.json(formatResponse(true, stats, "Fakultet statistikasi"));
@@ -497,7 +564,7 @@ export const getFacultyDashboard = async (req, res) => {
   }
 };
 
-// Get faculty students - barcha studentlar (filter orqali)
+// Get faculty students
 export const getFacultyStudents = async (req, res) => {
   try {
     const { groupId, busy, search, page = 1, limit = 20 } = req.query;
@@ -517,21 +584,39 @@ export const getFacultyStudents = async (req, res) => {
       filter["department.id"] = req.user.user.faculty.id;
     }
 
-    if (groupId) filter["group.id"] = parseInt(groupId);
+    // Fix: Check if groupId is valid before parsing
+    if (groupId && groupId !== "null" && groupId !== "undefined") {
+      const groupIdNum = parseInt(groupId);
+      if (!isNaN(groupIdNum)) {
+        filter["group.id"] = groupIdNum;
+      }
+    }
 
+    // Fix: Check busy parameter properly
     if (busy === "true") {
       filter.$or = [
-        { "enrolledClubs.0": { $exists: true } },
+        { enrolledClubs: { $elemMatch: { status: "approved" } } },
         { "externalCourses.0": { $exists: true } },
       ];
     } else if (busy === "false") {
       filter.$and = [
-        { "enrolledClubs.0": { $exists: false } },
-        { "externalCourses.0": { $exists: false } },
+        {
+          $or: [
+            { enrolledClubs: { $exists: false } },
+            { enrolledClubs: { $size: 0 } },
+            { enrolledClubs: { $not: { $elemMatch: { status: "approved" } } } },
+          ],
+        },
+        {
+          $or: [
+            { externalCourses: { $exists: false } },
+            { externalCourses: { $size: 0 } },
+          ],
+        },
       ];
     }
 
-    const skip = (page - 1) * limit;
+    const skip = (parseInt(page) - 1) * parseInt(limit);
 
     const [students, total] = await Promise.all([
       Student.find(filter)
@@ -551,7 +636,7 @@ export const getFacultyStudents = async (req, res) => {
             total,
             page: parseInt(page),
             limit: parseInt(limit),
-            pages: Math.ceil(total / limit),
+            pages: Math.ceil(total / parseInt(limit)),
           },
         },
         "Studentlar"
@@ -565,7 +650,7 @@ export const getFacultyStudents = async (req, res) => {
   }
 };
 
-// Get club enrollments - barcha fakultetlardan
+// Get club enrollments
 export const getClubEnrollments = async (req, res) => {
   try {
     const { status = "pending", clubId, page = 1, limit = 20 } = req.query;
