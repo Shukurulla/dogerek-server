@@ -12,7 +12,7 @@ import studentRoutes from "./routes/student.js";
 import clubRoutes from "./routes/club.js";
 import attendanceRoutes from "./routes/attendance.js";
 import commonRoutes from "./routes/common.js";
-
+import category from "./routes/category.js";
 // Utils
 import { syncHemisData } from "./utils/syncHemisData.js";
 
@@ -42,6 +42,7 @@ app.use("/api/student", studentRoutes);
 app.use("/api/clubs", clubRoutes);
 app.use("/api/attendance", attendanceRoutes);
 app.use("/api", commonRoutes); // Common routes for faculties, groups
+app.use("/api/categories", category);
 
 // Test route
 app.get("/", (req, res) => {

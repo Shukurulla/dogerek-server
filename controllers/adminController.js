@@ -95,7 +95,6 @@ export const getDashboardStats = async (req, res) => {
     const studentsInBothCount = studentsInBoth[0]?.total || 0;
 
     // Calculate busy students correctly (avoid double counting)
-    // busyStudents = studentsInClubs + studentsInExternal - studentsInBoth
     const busyStudents =
       enrolledStudents + externalCourseStudents - studentsInBothCount;
     const notBusyStudents = totalStudents - busyStudents;
@@ -145,10 +144,10 @@ export const getDashboardStats = async (req, res) => {
       totalTutors,
       activeClubs,
       todayAttendance,
-      enrolledStudents, // Faqat to'garaklarda
-      externalCourseStudents, // Faqat tashqi kurslarda
-      busyStudents, // Jami band (to'garak yoki tashqi kurs)
-      notBusyStudents, // Hech qayerda emas
+      enrolledStudents,
+      externalCourseStudents,
+      busyStudents,
+      notBusyStudents,
       busyPercentage:
         totalStudents > 0
           ? ((busyStudents / totalStudents) * 100).toFixed(1)
@@ -156,17 +155,7 @@ export const getDashboardStats = async (req, res) => {
       facultiesCount: faculties.length,
       crossFacultyEnrollments:
         crossFacultyStats[0]?.crossFacultyEnrollments || 0,
-      // Debug uchun qo'shimcha ma'lumot
-      debug: {
-        enrolledOnly: enrolledStudents,
-        externalOnly: externalCourseStudents,
-        bothClubAndExternal: studentsInBothCount,
-        calculatedBusy: busyStudents,
-        calculatedNotBusy: notBusyStudents,
-      },
     };
-
-    console.log("Dashboard stats with debug:", stats); // Debug log
 
     res.json(formatResponse(true, stats, "Dashboard statistikasi"));
   } catch (error) {
@@ -308,7 +297,7 @@ export const updateFacultyAdmin = async (req, res) => {
 
     // Update password if provided
     if (password && password.length >= 6) {
-      admin.password = password; // Schema pre-save hook will hash it
+      admin.password = password;
     } else if (password && password.length < 6) {
       return res
         .status(400)
@@ -370,12 +359,6 @@ export const deleteFacultyAdmin = async (req, res) => {
         .json(formatResponse(false, null, "Fakultet admin topilmadi"));
     }
 
-    // Check if admin has any active clubs under their faculty
-    const activeClubs = await Club.countDocuments({
-      "faculty.id": admin.faculty.id,
-      isActive: true,
-    });
-
     // Soft delete
     admin.isActive = false;
     admin.updatedAt = new Date();
@@ -419,7 +402,7 @@ export const getGroupsList = async (req, res) => {
   }
 };
 
-// Get all attendance
+// Get all attendance - FIXED WITH PROPER POPULATION
 export const getAllAttendance = async (req, res) => {
   try {
     const { clubId, startDate, endDate, page = 1, limit = 20 } = req.query;
@@ -442,11 +425,21 @@ export const getAllAttendance = async (req, res) => {
       Attendance.find(filter)
         .populate("club", "name")
         .populate("markedBy", "profile.fullName")
+        .populate({
+          path: "students.student",
+          select: "full_name student_id_number department group image email",
+        })
         .skip(skip)
         .limit(parseInt(limit))
         .sort("-date"),
       Attendance.countDocuments(filter),
     ]);
+
+    // Debug log
+    console.log(
+      "Attendance data sample:",
+      attendance[0]?.students?.slice(0, 2)
+    );
 
     res.json(
       formatResponse(
@@ -492,7 +485,7 @@ export const syncHemisDataController = async (req, res) => {
   }
 };
 
-// Get all students - with proper busy calculation
+// Get all students - WORKING VERSION
 export const getAllStudents = async (req, res) => {
   try {
     const {
@@ -504,12 +497,14 @@ export const getAllStudents = async (req, res) => {
       limit = 20,
     } = req.query;
 
-    const filter = { isActive: true };
+    console.log("Query params:", req.query);
 
-    // Fakultet filtrini faqat tanlanganda qo'llash
+    // Base filter
+    let filter = { isActive: true };
+
+    // Apply filters
     if (facultyId) filter["department.id"] = parseInt(facultyId);
     if (groupId) filter["group.id"] = parseInt(groupId);
-
     if (search) {
       filter.$or = [
         { full_name: { $regex: search, $options: "i" } },
@@ -517,35 +512,91 @@ export const getAllStudents = async (req, res) => {
       ];
     }
 
-    const skip = (page - 1) * limit;
+    // First get total count without busy filter for statistics
+    const totalCount = await Student.countDocuments(filter);
 
-    let students = await Student.find(filter)
+    // Now apply busy filter if needed
+    let studentsQuery;
+    let actualTotal = totalCount;
+
+    if (busy === "true") {
+      // Get only busy students
+      studentsQuery = Student.find({
+        ...filter,
+        $or: [
+          { enrolledClubs: { $elemMatch: { status: "approved" } } },
+          { "externalCourses.0": { $exists: true } },
+        ],
+      });
+
+      // Get actual count for busy students
+      actualTotal = await Student.countDocuments({
+        ...filter,
+        $or: [
+          { enrolledClubs: { $elemMatch: { status: "approved" } } },
+          { "externalCourses.0": { $exists: true } },
+        ],
+      });
+    } else if (busy === "false") {
+      // Get only not busy students
+      studentsQuery = Student.find({
+        ...filter,
+        $and: [
+          {
+            $or: [
+              { enrolledClubs: { $exists: false } },
+              { enrolledClubs: { $size: 0 } },
+              {
+                enrolledClubs: { $not: { $elemMatch: { status: "approved" } } },
+              },
+            ],
+          },
+          {
+            $or: [
+              { externalCourses: { $exists: false } },
+              { externalCourses: { $size: 0 } },
+            ],
+          },
+        ],
+      });
+
+      // Get actual count for not busy students
+      actualTotal = await Student.countDocuments({
+        ...filter,
+        $and: [
+          {
+            $or: [
+              { enrolledClubs: { $exists: false } },
+              { enrolledClubs: { $size: 0 } },
+              {
+                enrolledClubs: { $not: { $elemMatch: { status: "approved" } } },
+              },
+            ],
+          },
+          {
+            $or: [
+              { externalCourses: { $exists: false } },
+              { externalCourses: { $size: 0 } },
+            ],
+          },
+        ],
+      });
+    } else {
+      // Get all students
+      studentsQuery = Student.find(filter);
+    }
+
+    // Apply pagination
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+
+    const students = await studentsQuery
       .populate("enrolledClubs.club", "name faculty")
       .populate("externalCourses", "courseName institutionName")
       .skip(skip)
       .limit(parseInt(limit))
       .sort("full_name");
 
-    // Filter by busy status after population
-    if (busy === "true") {
-      students = students.filter((student) => {
-        const hasApprovedClub = student.enrolledClubs?.some(
-          (enrollment) => enrollment.status === "approved"
-        );
-        const hasExternalCourse = student.externalCourses?.length > 0;
-        return hasApprovedClub || hasExternalCourse;
-      });
-    } else if (busy === "false") {
-      students = students.filter((student) => {
-        const hasApprovedClub = student.enrolledClubs?.some(
-          (enrollment) => enrollment.status === "approved"
-        );
-        const hasExternalCourse = student.externalCourses?.length > 0;
-        return !hasApprovedClub && !hasExternalCourse;
-      });
-    }
-
-    const total = await Student.countDocuments(filter);
+    console.log(`Found ${students.length} students with busy=${busy}`);
 
     res.json(
       formatResponse(
@@ -553,10 +604,10 @@ export const getAllStudents = async (req, res) => {
         {
           students,
           pagination: {
-            total,
+            total: actualTotal,
             page: parseInt(page),
             limit: parseInt(limit),
-            pages: Math.ceil(total / limit),
+            pages: Math.ceil(actualTotal / parseInt(limit)),
           },
         },
         "Studentlar ro'yxati"
@@ -570,13 +621,21 @@ export const getAllStudents = async (req, res) => {
   }
 };
 
-// Get all clubs - with real student counts
+// Get all clubs - with real student counts and category
 export const getAllClubs = async (req, res) => {
   try {
-    const { facultyId, tutorId, search, page = 1, limit = 20 } = req.query;
+    const {
+      facultyId,
+      categoryId,
+      tutorId,
+      search,
+      page = 1,
+      limit = 20,
+    } = req.query;
 
     const filter = { isActive: true };
     if (facultyId) filter["faculty.id"] = parseInt(facultyId);
+    if (categoryId) filter.category = categoryId;
     if (tutorId) filter.tutor = tutorId;
     if (search) {
       filter.$or = [
@@ -590,6 +649,7 @@ export const getAllClubs = async (req, res) => {
     const [clubs, total] = await Promise.all([
       Club.find(filter)
         .populate("tutor", "profile.fullName profile.phone")
+        .populate("category", "name color")
         .skip(skip)
         .limit(parseInt(limit))
         .sort("-createdAt"),

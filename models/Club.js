@@ -8,6 +8,13 @@ const clubSchema = new mongoose.Schema({
 
   description: String,
 
+  // Yangi category field
+  category: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "Category",
+    required: true,
+  },
+
   faculty: {
     id: Number,
     name: String,
@@ -62,6 +69,7 @@ const clubSchema = new mongoose.Schema({
 
 clubSchema.index({ "faculty.id": 1 });
 clubSchema.index({ tutor: 1 });
+clubSchema.index({ category: 1 });
 
 const Club = mongoose.model("Club", clubSchema);
 
