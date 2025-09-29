@@ -275,10 +275,7 @@ export const deleteClub = async (req, res) => {
         .json(formatResponse(false, null, "To'garak topilmadi"));
     }
 
-    // Soft delete
-    club.isActive = false;
-    club.updatedAt = new Date();
-    await club.save();
+    await Club.findByIdAndDelete(club._id);
 
     res.json(formatResponse(true, null, "To'garak o'chirildi"));
   } catch (error) {
