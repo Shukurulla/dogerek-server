@@ -470,18 +470,25 @@ export const getMyAttendance = async (req, res) => {
   }
 };
 
-// Student dashboard
 export const getStudentDashboard = async (req, res) => {
   try {
+    // Studentni topish
     const student = await Student.findById(req.user.id)
       .populate("enrolledClubs.club", "name schedule")
       .populate("externalCourses");
 
-    // Get attendance statistics
-    const enrolledClubIds = student.enrolledClubs
-      .filter((e) => e.status === "approved")
-      .map((e) => e.club._id);
+    if (!student) {
+      return res
+        .status(404)
+        .json(formatResponse(false, null, "Student topilmadi"));
+    }
 
+    // Faqat approved clublarni olish
+    const enrolledClubIds = student.enrolledClubs
+      .filter((e) => e.status === "approved" && e.club) // club bo‘lmasa tashlab yuboramiz
+      .map((e) => e.club._id.toString());
+
+    // Shu oy boshidan davomat hisoblash
     const thisMonth = new Date();
     thisMonth.setDate(1);
     thisMonth.setHours(0, 0, 0, 0);
@@ -489,14 +496,14 @@ export const getStudentDashboard = async (req, res) => {
     const attendanceStats = await Attendance.aggregate([
       {
         $match: {
-          club: { $in: enrolledClubIds },
+          club: {
+            $in: enrolledClubIds.map((id) => new mongoose.Types.ObjectId(id)),
+          },
           "students.student": student._id,
           date: { $gte: thisMonth },
         },
       },
-      {
-        $unwind: "$students",
-      },
+      { $unwind: "$students" },
       {
         $match: {
           "students.student": student._id,
@@ -515,6 +522,7 @@ export const getStudentDashboard = async (req, res) => {
 
     const stats = attendanceStats[0] || { totalClasses: 0, presentCount: 0 };
 
+    // Dashboard ma'lumotlari
     const dashboardData = {
       profile: {
         full_name: student.full_name,
@@ -525,7 +533,7 @@ export const getStudentDashboard = async (req, res) => {
       },
       statistics: {
         enrolledClubs: student.enrolledClubs.filter(
-          (e) => e.status === "approved"
+          (e) => e.status === "approved" && e.club
         ).length,
         pendingApplications: student.enrolledClubs.filter(
           (e) => e.status === "pending"
@@ -539,7 +547,7 @@ export const getStudentDashboard = async (req, res) => {
             : 0,
       },
       activeClubs: student.enrolledClubs
-        .filter((e) => e.status === "approved")
+        .filter((e) => e.status === "approved" && e.club) // null bo‘lsa tashlab yuboradi
         .map((e) => ({
           id: e.club._id,
           name: e.club.name,
