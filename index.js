@@ -23,7 +23,13 @@ const app = express();
 // Middleware
 app.use(
   cors({
-    origin: "*",
+    origin: [
+      "https://admin.qmu-dogerek.uz/",
+      "https://fakultet.qmu-dogerek.uz/",
+      "https://teacher.qmu-dogerek.uz/",
+      "https://www.qmu-dogerek.uz/",
+      "https://qmu-dogerek.uz/",
+    ],
     optionsSuccessStatus: 200,
     credentials: true,
   })
