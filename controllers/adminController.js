@@ -197,9 +197,38 @@ export const createFacultyAdmin = async (req, res) => {
     const faculty = faculties.find((f) => f.id === parseInt(facultyId));
 
     if (!faculty) {
+      // Format phone number
+      const formattedPhone = phone ? formatPhoneNumber(phone).db : null;
+
+      // Create new faculty admin
+      const newAdmin = new User({
+        username,
+        password,
+        role: "faculty_admin",
+        profile: {
+          fullName,
+          phone: formattedPhone,
+          email,
+        },
+        isAnother: true,
+        createdBy: req.user.id,
+      });
+
+      await newAdmin.save();
+
+      // Remove password from response
+      const adminData = newAdmin.toObject();
+      delete adminData.password;
+
       return res
-        .status(400)
-        .json(formatResponse(false, null, "Fakultet topilmadi"));
+        .status(201)
+        .json(
+          formatResponse(
+            true,
+            adminData,
+            "Fakultet admin muvaffaqiyatli yaratildi"
+          )
+        );
     }
 
     // Format phone number
@@ -359,10 +388,7 @@ export const deleteFacultyAdmin = async (req, res) => {
         .json(formatResponse(false, null, "Fakultet admin topilmadi"));
     }
 
-    // Soft delete
-    admin.isActive = false;
-    admin.updatedAt = new Date();
-    await admin.save();
+    await User.findByIdAndDelete(id);
 
     res.json(formatResponse(true, null, "Fakultet admin o'chirildi"));
   } catch (error) {

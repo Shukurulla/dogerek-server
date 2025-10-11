@@ -32,7 +32,10 @@ const userSchema = new mongoose.Schema({
     name: String,
     code: String,
   },
-
+  isAnother: {
+    type: Boolean,
+    default: false,
+  },
   // Tutor uchun
   assignedClubs: [
     {
