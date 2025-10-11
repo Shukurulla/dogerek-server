@@ -4,6 +4,7 @@ import Enrollment from "../models/Enrollment.js";
 import ExternalCourse from "../models/ExternalCourse.js";
 import Attendance from "../models/Attendance.js";
 import { formatResponse, formatPhoneNumber } from "../utils/formatters.js";
+import mongoose from "mongoose";
 
 // Get all available clubs
 export const getAllClubs = async (req, res) => {
