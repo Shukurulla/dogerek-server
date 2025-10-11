@@ -33,6 +33,7 @@ app.use(
       "http://localhost:3002",
       "http://localhost:3009",
       "http://localhost:3003",
+      "http://localhost:3004",
     ],
     optionsSuccessStatus: 200,
     credentials: true,
